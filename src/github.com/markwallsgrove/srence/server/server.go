@@ -1,8 +1,8 @@
 package server
 
 import (
-	"fmt"
 	"github.com/markwallsgrove/srence/config"
+	"github.com/markwallsgrove/srence/errors"
 	"io/ioutil"
 	"os"
 )
@@ -16,8 +16,15 @@ func FindPublicCert(emailAddr string) ([]byte, error) {
 	return ioutil.ReadFile("./id_rsa.pub")
 }
 
-func SendEncryptedFile(configuration *config.Configuration, content string) error {
-	fmt.Println(content)
+func SendEncryptedFile(configuration *config.Configuration, encFile *os.File) error {
+	encFile.Seek(0, os.SEEK_SET)
+
+	if content, err := ioutil.ReadAll(encFile); err != nil {
+		return errors.Wrap("Read enc file", err)
+	} else {
+		ioutil.WriteFile("hack.enc", content, 0755)
+	}
+
 	return nil
 }
 
@@ -26,6 +33,7 @@ func RecieveEncryptedFile(fileId string, file *os.File) error {
 		return err
 	} else {
 		file.Write(content)
-		return file.Close()
+		file.Seek(0, os.SEEK_SET)
+		return nil
 	}
 }

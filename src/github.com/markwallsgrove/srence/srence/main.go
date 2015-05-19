@@ -62,7 +62,7 @@ func recieveFile(configuration *config.Configuration) {
 		log.Fatalf("Cannot recieve encrypted file: %s", err)
 	}
 
-	err = decrypt.DecryptFile(*paramFileLoc, configuration.PrivCert)
+	err = decrypt.DecryptFile(tmpFileLoc, *paramFileLoc, configuration.PrivCert)
 	if err != nil {
 		log.Fatalf("Cannot decrypt recieved file: %s", err)
 	}

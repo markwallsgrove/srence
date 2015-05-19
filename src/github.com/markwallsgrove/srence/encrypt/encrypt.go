@@ -7,11 +7,11 @@ import (
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/x509"
-	"encoding/base64"
 	"github.com/ianmcmahon/encoding_ssh"
 	"github.com/markwallsgrove/srence/errors"
 	"io"
 	"io/ioutil"
+	"os"
 )
 
 func generateRandomString(length int) ([]byte, error) {
@@ -46,48 +46,59 @@ func convertSSHRSAToRSA(bytes []byte) (*rsa.PublicKey, error) {
 	return key.(*rsa.PublicKey), nil
 }
 
-func encryptWithRSAPublicKey(contents []byte, key *rsa.PublicKey) ([]byte, error) {
-	// TODO: what is a label for? I didn't think it was needed
+func encryptWithRSAPublicKey(contents []byte, key *rsa.PublicKey) (*os.File, error) {
 	label := []byte("")
 
 	out, err := rsa.EncryptOAEP(sha1.New(), rand.Reader, key, contents, label)
 	if err != nil {
-		return nil, errors.Wrap("encrypt oaep", err)
+		return &os.File{}, errors.Wrap("encrypt oaep", err)
 	}
 
-	return out, nil
+	encFile, err := ioutil.TempFile("", "")
+	if err != nil {
+		return &os.File{}, errors.Wrap("TempFile", err)
+	}
+
+	encFile.Write(out)
+	return encFile, nil
 }
 
-func encryptWithAES(content []byte, iv []byte, aesKey []byte) ([]byte, error) {
+func encryptWithAES(plainFile io.Reader, iv []byte, aesKey []byte, encFile *os.File) error {
+	// https://golang.org/src/crypto/cipher/example_test.go
+
 	block, err := aes.NewCipher(aesKey)
 	if err != nil {
-		return nil, errors.Wrap("encryp aes", err)
+		return errors.Wrap("New AES Cipher", err)
 	}
 
-	cipherText := make([]byte, len(content))
-	stream := cipher.NewCFBEncrypter(block, iv)
-	stream.XORKeyStream(cipherText, content)
-	return cipherText, nil
+	// If the key is unique for each ciphertext, then it's ok to use a zero
+	stream := cipher.NewOFB(block, iv)
+
+	writer := &cipher.StreamWriter{S: stream, W: encFile}
+	// Copy the input file to the output file, encrypting as we go.
+	if _, err := io.Copy(writer, plainFile); err != nil {
+		return errors.Wrap("File Copy Failure", err)
+	}
+
+	// TODO: Note that this example is simplistic in that it omits any
+	// authentication of the encrypted data. If you were actually to use
+	// StreamReader in this manner, an attacker could flip arbitrary bits in
+	// the decrypted result.
+
+	return nil
 }
 
-// TODO: encrypt file into a buffer file, cannot just use memory
-func EncryptFile(file io.Reader, publicKeyBytes []byte) (string, error) {
-	// Load content to be encrypted
-	plainContent, err := ioutil.ReadAll(file)
-	if err != nil {
-		return "", errors.Wrap("read file", err)
-	}
-
+func EncryptFile(file *os.File, publicKeyBytes []byte) (*os.File, error) {
 	// Convert key from ssh-rsa to rsa public key
 	pubKey, err := convertSSHRSAToRSA(publicKeyBytes)
 	if err != nil {
-		return "", err
+		return &os.File{}, err
 	}
 
 	// Generate random key to use for AES
 	aesKey, err := generateRandomString(32) // 32 bytes === AES-256
 	if err != nil {
-		return "", err
+		return &os.File{}, err
 	}
 
 	// Generate random iv to use with AES.
@@ -95,23 +106,21 @@ func EncryptFile(file io.Reader, publicKeyBytes []byte) (string, error) {
 	// else the first block will always be the same
 	iv, err := generateRandomString(aes.BlockSize) // 16 bytes
 	if err != nil {
-		return "", err
+		return &os.File{}, err
 	}
 
 	// Encrypt random key with RSA public key
 	plainHeader := append(aesKey, iv...)
-	byteHeader, err := encryptWithRSAPublicKey(plainHeader, pubKey)
+	encFile, err := encryptWithRSAPublicKey(plainHeader, pubKey)
 	if err != nil {
-		return "", err
+		return &os.File{}, err
 	}
 
 	// Encrypt content with AES
-	byteCipherText, err := encryptWithAES(plainContent, iv, aesKey)
+	err = encryptWithAES(file, iv, aesKey, encFile)
 	if err != nil {
-		return "", err
+		return &os.File{}, err
 	}
 
-	// Output to stdout
-	encodedContent := base64.URLEncoding.EncodeToString(append(byteHeader, byteCipherText...))
-	return encodedContent, nil
+	return encFile, nil
 }
